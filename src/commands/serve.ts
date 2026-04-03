@@ -52,6 +52,11 @@ class TabManager {
         "remote.active-port": 0,
         "dom.webdriver.enabled": false,
         "useAutomationExtension": false,
+        "webgl.disabled": true,
+        "webgl.disable-extensions": true,
+        "gfx.driver.disabled": true,
+        "security.insecure_connection.enabled": true,
+        "security.insecure_connection.warn": false,
       };
     }
 

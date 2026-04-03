@@ -139,6 +139,8 @@ async function checkIfLoggedIn(page: Page): Promise<boolean> {
   try {
     // Check for elements that indicate logged-in state
     const loggedInIndicators = [
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
       '[data-testid="chat-input"]',
       '[placeholder*="Ask anything"]',
       ".chat-input",

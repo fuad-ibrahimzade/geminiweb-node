@@ -147,6 +147,8 @@ export class GeminiTab {
   private async submitPrompt(prompt: string): Promise<void> {
     // Find the input field and enter the prompt
     const inputSelectors = [
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
       '[data-testid="chat-input"]',
       '[placeholder*="Ask anything"]',
       ".chat-input textarea",
@@ -155,10 +157,12 @@ export class GeminiTab {
     ];
 
     let inputElement = null;
+    let usedSelector = "";
     for (const selector of inputSelectors) {
       try {
         inputElement = await this.page.$(selector);
         if (inputElement) {
+          usedSelector = selector;
           break;
         }
       } catch {
@@ -167,14 +171,33 @@ export class GeminiTab {
     }
 
     if (!inputElement) {
+      console.error("Failed to find chat input. Available selectors tried:", inputSelectors);
       throw new Error("Could not find chat input field");
     }
 
+    console.log(`Found chat input using selector: ${usedSelector}`);
+
     // Clear any existing content and type the prompt
-    await inputElement.fill(prompt);
+    try {
+      if (usedSelector.includes('contenteditable="true"')) {
+        await inputElement.click();
+        // Clear content for contenteditable
+        await this.page.keyboard.press('Control+A');
+        await this.page.keyboard.press('Backspace');
+        await this.page.keyboard.type(prompt);
+      } else {
+        await inputElement.fill(prompt);
+      }
+    } catch (error: any) {
+      console.warn(`Failed to fill/type prompt using ${usedSelector}: ${error.message}`);
+      // Fallback to click and type if fill fails
+      await inputElement.click();
+      await this.page.keyboard.type(prompt);
+    }
 
     // Submit the message
     const submitSelectors = [
+      'button._send_button',
       '[data-testid="send-button"]',
       'button[aria-label*="Send"]',
       'button[type="submit"]',
@@ -184,7 +207,8 @@ export class GeminiTab {
     for (const selector of submitSelectors) {
       try {
         const submitButton = await this.page.$(selector);
-        if (submitButton) {
+        if (submitButton && await submitButton.isVisible() && await submitButton.isEnabled()) {
+          console.log(`Clicking send button using selector: ${selector}`);
           await submitButton.click();
           submitted = true;
           break;
@@ -195,6 +219,7 @@ export class GeminiTab {
     }
 
     if (!submitted) {
+      console.log("Could not find or click send button, pressing Enter as fallback");
       // Try pressing Enter as fallback
       await this.page.keyboard.press("Enter");
     }
@@ -322,6 +347,8 @@ export class GeminiTab {
   private async waitForPageReady(): Promise<void> {
     // Wait for the chat interface to be ready
     const readySelectors = [
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
       '[data-testid="chat-input"]',
       '[placeholder*="Ask anything"]',
       ".chat-input",

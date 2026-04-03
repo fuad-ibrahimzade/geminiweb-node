@@ -7,6 +7,33 @@ const GEMINI_URL = "https://gemini.google.com";
 const SESSION_DIR = path.join(os.homedir(), ".gemini-server");
 const COOKIES_FILE = path.join(SESSION_DIR, "cookies.json");
 
+const RESPONSE_SELECTORS = [
+  "model-response",
+  ".model-response",
+  ".message-content",
+  ".response-content",
+  '[data-testid="response"]',
+  ".conversation-response",
+  '[data-message-author-role="model"]',
+  ".model-response-text",
+  "div.markdown",
+  ".markdown",
+  '[class*="response"]',
+];
+
+const LOADING_SELECTORS = [
+  ".loading-indicator",
+  '[data-testid="loading"]',
+  ".generating",
+  ".thinking",
+  "mat-progress-bar",
+  ".creating-response",
+  '[aria-label="Thinking"]',
+  '[aria-label="Generating response"]',
+  ".st-loading-container",
+  "loading-component",
+];
+
 export class GeminiBrowser {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -248,34 +275,33 @@ export class GeminiTab {
   }
 
   private async waitForResponse(): Promise<string> {
-    // Wait for the response to appear
-    const responseSelectors = [
-      ".response-content",
-      '[data-testid="response"]',
-      ".conversation-response",
-      '[data-message-author-role="model"]',
-      ".model-response-text",
-      '[class*="response"]',
-    ];
-
-    // Wait a bit for the response to start generating
-    await this.page.waitForTimeout(1000);
-
-    // First, wait for any response element to appear
+    console.log("[Debug] Waiting for Gemini response...");
+    
+    // First, wait for any response element to appear or for thinking state to start
+    const startWait = Date.now();
+    const maxStartWait = 45000; // 45 seconds for Gemini to start showing something
     let responseElement = null;
     let foundSelector = "";
-    const waitForElementStart = Date.now();
-    const maxElementWaitTime = 30000; // 30 seconds to start seeing a response
 
-    while (Date.now() - waitForElementStart < maxElementWaitTime) {
-      for (const selector of responseSelectors) {
+    console.log("[Debug] Waiting for response element or thinking indicator...");
+    
+    while (Date.now() - startWait < maxStartWait) {
+      // Check for thinking state
+      const isComplete = await this.isResponseComplete();
+      if (!isComplete) {
+        console.log("[Debug] Gemini is thinking or generating...");
+      }
+
+      // Try to find a response element
+      for (const selector of RESPONSE_SELECTORS) {
         try {
-          const element = await this.page.$(selector);
-          if (element) {
-            const text = await element.textContent();
-            // Only consider it found if it has content
+          const elements = await this.page.$$(selector);
+          if (elements.length > 0) {
+            // Get the last one as it's the most recent response
+            const lastElement = elements[elements.length - 1];
+            const text = await lastElement.textContent();
             if (text && text.trim().length > 0) {
-              responseElement = element;
+              responseElement = lastElement;
               foundSelector = selector;
               break;
             }
@@ -284,42 +310,102 @@ export class GeminiTab {
           continue;
         }
       }
-      if (responseElement) break;
-      await this.page.waitForTimeout(500);
+
+      if (responseElement) {
+        console.log(`[Debug] Response started appearing (found by ${foundSelector})`);
+        break;
+      }
+      
+      await this.page.waitForTimeout(1000);
     }
 
     if (!responseElement) {
-      throw new Error("Timeout waiting for response element to appear");
+      console.error("[Error] Timeout waiting for response element to appear");
+      throw new Error("Timeout waiting for Gemini to start responding");
     }
 
-    console.log(`Found response element using selector: ${foundSelector}`);
+    // Now poll for completion
+    const maxCompleteWait = 150000; // 2.5 minutes for long responses
+    const completeStart = Date.now();
+    let lastText = "";
+    let stableCount = 0;
+    const requiredStableCount = 2; // Stable for 2 iterations when isComplete is true
 
-    // Poll for response completion
-    const maxWaitTime = 120000; // 2 minutes
-    const pollInterval = 1000;
+    console.log("[Debug] Polling for response completion...");
+
+    while (Date.now() - completeStart < maxCompleteWait) {
+      try {
+        const text = (await responseElement.textContent()) || "";
+        const isComplete = await this.isResponseComplete();
+
+        if (text && text.trim() === lastText.trim()) {
+          if (isComplete) {
+            stableCount++;
+            if (stableCount >= requiredStableCount) {
+              console.log("[Debug] Response stable and complete.");
+              return text.trim();
+            }
+          }
+        } else {
+          lastText = text;
+          stableCount = 0;
+        }
+
+        if (!isComplete) {
+          console.log(`[Debug] Still generating... Current length: ${text.length}`);
+        }
+      } catch (error: any) {
+        console.warn(`[Warning] Error during response polling: ${error.message}. Attempting to re-locate element.`);
+        // Try to re-find the last response element
+        for (const selector of RESPONSE_SELECTORS) {
+          try {
+            const elements = await this.page.$$(selector);
+            if (elements.length > 0) {
+              responseElement = elements[elements.length - 1];
+              break;
+            }
+          } catch {}
+        }
+      }
+      
+      await this.page.waitForTimeout(1500);
+    }
+
+    if (lastText.trim()) {
+      console.log("[Debug] Returning last captured text due to timeout");
+      return lastText.trim();
+    }
+
+    throw new Error("Timeout waiting for response completion");
+  }
+
+  private async *streamResponse(): AsyncGenerator<string> {
+    console.log("[Debug] Starting response stream...");
+    
+    const maxWaitTime = 150000; // 2.5 minutes
+    const pollInterval = 200;
     const startTime = Date.now();
 
-    let lastResponseText = "";
+    let lastText = "";
+    let responseElementFound = false;
+    let responseElement: any = null;
 
     while (Date.now() - startTime < maxWaitTime) {
-      try {
-        const text = await responseElement.textContent();
-        if (text && text !== lastResponseText) {
-          lastResponseText = text;
-          // Check if response is complete (no loading indicator)
-          const isComplete = await this.isResponseComplete();
-          if (isComplete && text.trim().length > 0) {
-            return text.trim();
-          }
-        }
-      } catch {
-        // Element might have been replaced, try to find it again
-        for (const selector of responseSelectors) {
+      let currentText = "";
+
+      if (!responseElementFound) {
+        for (const selector of RESPONSE_SELECTORS) {
           try {
-            const element = await this.page.$(selector);
-            if (element) {
-              responseElement = element;
-              break;
+            const elements = await this.page.$$(selector);
+            if (elements.length > 0) {
+              const lastElement = elements[elements.length - 1];
+              const text = await lastElement.textContent();
+              if (text && text.trim().length > 0) {
+                responseElement = lastElement;
+                responseElementFound = true;
+                console.log(`[Debug] Stream response element found by ${selector}`);
+                break;
+              }
             }
           } catch {
             continue;
@@ -327,58 +413,13 @@ export class GeminiTab {
         }
       }
 
-      await this.page.waitForTimeout(pollInterval);
-    }
-
-    if (lastResponseText) {
-      return lastResponseText.trim();
-    }
-
-    throw new Error("Timeout waiting for response");
-  }
-
-  private async *streamResponse(): AsyncGenerator<string> {
-    const responseSelectors = [
-      ".response-content",
-      '[data-testid="response"]',
-      ".conversation-response",
-      '[data-message-author-role="model"]',
-      ".model-response-text",
-      '[class*="response"]',
-    ];
-
-    const maxWaitTime = 120000;
-    const pollInterval = 100;
-    const startTime = Date.now();
-
-    let lastText = "";
-    let responseElementFound = false;
-
-    while (Date.now() - startTime < maxWaitTime) {
-      let currentText = "";
-      let responseElement = null;
-
-      for (const selector of responseSelectors) {
+      if (responseElementFound) {
         try {
-          const element = await this.page.$(selector);
-          if (element) {
-            const text = await element.textContent();
-            if (text && text.trim().length > 0) {
-              responseElement = element;
-              currentText = text;
-              responseElementFound = true;
-              break;
-            }
-          }
+          currentText = (await responseElement.textContent()) || "";
         } catch {
-          continue;
+          // Element might have been replaced
+          responseElementFound = false;
         }
-      }
-
-      // Only start yielding once we found a response element
-      if (!responseElementFound) {
-        await this.page.waitForTimeout(pollInterval);
-        continue;
       }
 
       if (currentText.length > lastText.length) {
@@ -387,37 +428,56 @@ export class GeminiTab {
         yield newText;
       }
 
-      const isComplete = await this.isResponseComplete();
-      if (isComplete && currentText.length > 0) {
-        break;
+      if (responseElementFound) {
+        const isComplete = await this.isResponseComplete();
+        if (isComplete && currentText.length > 0) {
+          // Wait a bit more to ensure no more text is coming
+          await this.page.waitForTimeout(1000);
+          const finalText = (await responseElement.textContent()) || "";
+          if (finalText.length > lastText.length) {
+             yield finalText.slice(lastText.length);
+          }
+          console.log("[Debug] Stream response complete.");
+          break;
+        }
       }
 
       await this.page.waitForTimeout(pollInterval);
     }
 
-    if (!responseElementFound) {
+    if (!responseElementFound && lastText.length === 0) {
       throw new Error("Timeout waiting for response element in stream");
     }
   }
 
   private async isResponseComplete(): Promise<boolean> {
-    // Check for loading indicators
-    const loadingSelectors = [
-      ".loading-indicator",
-      '[data-testid="loading"]',
-      ".generating",
-      ".thinking",
-    ];
-
-    for (const selector of loadingSelectors) {
+    // Check for any loading indicators
+    for (const selector of LOADING_SELECTORS) {
       try {
         const loadingElement = await this.page.$(selector);
-        if (loadingElement && (await loadingElement.isVisible())) {
-          return false;
+        if (loadingElement) {
+          const isVisible = await loadingElement.isVisible();
+          if (isVisible) {
+            return false;
+          }
         }
       } catch {
         continue;
       }
+    }
+
+    // Check for "thinking" animations or text in the page
+    try {
+      const pageText = await this.page.innerText("body");
+      if (
+        pageText.includes("Thinking...") || 
+        pageText.includes("Gemini is thinking") ||
+        pageText.includes("Generating response")
+      ) {
+        return false;
+      }
+    } catch {
+      // Ignore errors in text extraction
     }
 
     // If no loading indicator found, response is likely complete

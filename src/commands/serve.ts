@@ -261,6 +261,8 @@ export async function serve(options: ServeOptions): Promise<void> {
 
       // Find and fill input with custom wait strategy
       const inputSelectors = [
+        'div[contenteditable="true"][role="textbox"]',
+        'div[contenteditable="true"]',
         '[data-testid="chat-input"]',
         '[placeholder*="Ask anything"]',
         'textarea[aria-label*="chat"]',
@@ -269,12 +271,14 @@ export async function serve(options: ServeOptions): Promise<void> {
 
       let inputElement = null;
       let inputReady = false;
+      let usedSelector = "";
       for (let i = 0; i < 15; i++) { // 15 second timeout
         for (const selector of inputSelectors) {
           try {
             inputElement = await page.$(selector);
             if (inputElement && await inputElement.isVisible()) {
               inputReady = true;
+              usedSelector = selector;
               break;
             }
           } catch { continue; }
@@ -288,11 +292,56 @@ export async function serve(options: ServeOptions): Promise<void> {
         if (page.url().includes("accounts.google.com")) {
           throw new Error("Authentication error: Directed to login page. Please run 'npm run login'.");
         }
+        console.error("Failed to find chat input. Available selectors tried:", inputSelectors);
         throw new Error("Timeout error: Could not find chat input field. Gemini might be slow or the UI has changed.");
       }
 
-      await inputElement.fill(prompt);
-      await page.keyboard.press("Enter");
+      console.log(`Found chat input using selector: ${usedSelector}`);
+
+      try {
+        if (usedSelector.includes('contenteditable="true"')) {
+          await inputElement.click();
+          // Clear content for contenteditable
+          await page.keyboard.press('Control+A');
+          await page.keyboard.press('Backspace');
+          await page.keyboard.type(prompt);
+        } else {
+          await inputElement.fill(prompt);
+        }
+      } catch (error: any) {
+        console.warn(`Failed to fill/type prompt using ${usedSelector}: ${error.message}`);
+        // Fallback to click and type if fill fails
+        await inputElement.click();
+        await page.keyboard.type(prompt);
+      }
+
+      // Submit the message
+      const submitSelectors = [
+        'button._send_button',
+        '[data-testid="send-button"]',
+        'button[aria-label*="Send"]',
+        'button[type="submit"]',
+      ];
+
+      let submitted = false;
+      for (const selector of submitSelectors) {
+        try {
+          const submitButton = await page.$(selector);
+          if (submitButton && await submitButton.isVisible() && await submitButton.isEnabled()) {
+            console.log(`Clicking send button using selector: ${selector}`);
+            await submitButton.click();
+            submitted = true;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      if (!submitted) {
+        console.log("Could not find or click send button, pressing Enter as fallback");
+        await page.keyboard.press("Enter");
+      }
 
       // Wait for response
       await page.waitForTimeout(3000);

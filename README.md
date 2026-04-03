@@ -45,6 +45,10 @@ npm run login
 
 # Use Firefox instead (recommended on NixOS)
 npm run login -- --browser firefox
+
+# Use custom browser executable
+npm run login -- --chromium-path /usr/bin/chromium
+npm run login -- --firefox-path /usr/bin/firefox
 ```
 
 This will open a browser window where you can log in to your Google account. The session will be saved for later use.
@@ -60,6 +64,10 @@ npm run serve -- --browser firefox
 
 # Or with custom options
 npm run serve -- --port 8080 --pool-size 5 --browser firefox
+
+# Use custom browser executable
+npm run serve -- --chromium-path /usr/bin/chromium
+npm run serve -- --firefox-path /usr/bin/firefox
 ```
 
 ### 3. Logout (Optional)
@@ -135,6 +143,56 @@ Options:
 - `--headless` - Run browser in headless mode (default: true)
 - `--pool-size <size>` - Number of browser tabs to maintain in pool (default: 3)
 - `-b, --browser <browser>` - Browser to use: chromium or firefox (default: chromium)
+- `--chromium-path <path>` - Path to custom Chromium executable
+- `--firefox-path <path>` - Path to custom Firefox executable
+
+### Using Custom Browser Executables
+
+You can use system-installed browsers instead of Playwright-managed ones by providing the path to the browser executable. This is useful when Playwright's bundled browsers show the "not secure" error.
+
+#### Linux (Ubuntu/Debian)
+```bash
+# Chromium
+npm run login -- --chromium-path /usr/bin/chromium-browser
+npm run serve -- --chromium-path /usr/bin/chromium-browser
+
+# Firefox
+npm run login -- --firefox-path /usr/bin/firefox
+npm run serve -- --firefox-path /usr/bin/firefox
+```
+
+#### macOS
+```bash
+# Chrome
+npm run login -- --chromium-path /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
+npm run serve -- --chromium-path /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
+
+# Firefox
+npm run login -- --firefox-path /Applications/Firefox.app/Contents/MacOS/firefox
+npm run serve -- --firefox-path /Applications/Firefox.app/Contents/MacOS/firefox
+```
+
+#### Windows (PowerShell)
+```powershell
+# Chrome
+npm run login -- --chromium-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
+npm run serve -- --chromium-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+# Firefox
+npm run login -- --firefox-path "C:\Program Files\Mozilla Firefox\firefox.exe"
+npm run serve -- --firefox-path "C:\Program Files\Mozilla Firefox\firefox.exe"
+```
+
+#### Windows (Git Bash/WSL)
+```bash
+# Chrome
+npm run login -- --chromium-path "/c/Program Files/Google/Chrome/Application/chrome.exe"
+npm run serve -- --chromium-path "/c/Program Files/Google/Chrome/Application/chrome.exe"
+
+# Firefox
+npm run login -- --firefox-path "/c/Program Files/Mozilla Firefox/firefox.exe"
+npm run serve -- --firefox-path "/c/Program Files/Mozilla Firefox/firefox.exe"
+```
 
 ## Cross-Platform Compatibility
 

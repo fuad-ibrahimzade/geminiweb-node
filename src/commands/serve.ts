@@ -11,6 +11,8 @@ interface ServeOptions {
   headless: boolean;
   poolSize: string;
   browser: "chromium" | "firefox";
+  chromiumPath?: string;
+  firefoxPath?: string;
 }
 
 const GEMINI_URL = "https://gemini.google.com";
@@ -30,9 +32,13 @@ class TabManager {
   private availablePages: Page[] = [];
   private busyPages: Set<Page> = new Set();
   private browserType: "chromium" | "firefox";
+  private chromiumPath?: string;
+  private firefoxPath?: string;
 
-  constructor(browserType: "chromium" | "firefox") {
+  constructor(browserType: "chromium" | "firefox", chromiumPath?: string, firefoxPath?: string) {
     this.browserType = browserType;
+    this.chromiumPath = chromiumPath;
+    this.firefoxPath = firefoxPath;
   }
 
   async initialize(poolSize: number, headless: boolean): Promise<void> {
@@ -46,6 +52,13 @@ class TabManager {
         ? ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-setuid-sandbox"]
         : ["--width=1280", "--height=800"],
     };
+
+    // Use custom executable path if provided
+    if (this.browserType === "chromium" && this.chromiumPath) {
+      launchOptions.executablePath = this.chromiumPath;
+    } else if (this.browserType === "firefox" && this.firefoxPath) {
+      launchOptions.executablePath = this.firefoxPath;
+    }
 
     if (this.browserType === "firefox") {
       launchOptions.firefoxUserPrefs = {
@@ -145,9 +158,15 @@ export async function serve(options: ServeOptions): Promise<void> {
 
   console.log("Starting Gemini API server...");
   console.log(`Configuration: host=${host}, port=${port}, headless=${options.headless}, poolSize=${poolSize}, browser=${options.browser}`);
+  if (options.chromiumPath) {
+    console.log(`Custom Chromium path: ${options.chromiumPath}`);
+  }
+  if (options.firefoxPath) {
+    console.log(`Custom Firefox path: ${options.firefoxPath}`);
+  }
 
   // Initialize browser and tab pool
-  const tabManager = new TabManager(options.browser);
+  const tabManager = new TabManager(options.browser, options.chromiumPath, options.firefoxPath);
   await tabManager.initialize(poolSize, options.headless);
 
   const app = express();

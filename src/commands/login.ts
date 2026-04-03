@@ -10,6 +10,8 @@ const COOKIES_FILE = path.join(SESSION_DIR, "cookies.json");
 interface LoginOptions {
   headless: boolean;
   browser: "chromium" | "firefox";
+  chromiumPath?: string;
+  firefoxPath?: string;
 }
 
 // Detect if we're on NixOS
@@ -48,6 +50,13 @@ export async function login(options: LoginOptions): Promise<void> {
     console.log("Or install Firefox: nix-env -iA nixpkgs.firefox\n");
   }
 
+  // Log custom browser paths if provided
+  if (options.browser === "chromium" && options.chromiumPath) {
+    console.log(`Custom Chromium path: ${options.chromiumPath}`);
+  } else if (options.browser === "firefox" && options.firefoxPath) {
+    console.log(`Custom Firefox path: ${options.firefoxPath}`);
+  }
+
   // Ensure session directory exists
   if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -56,12 +65,21 @@ export async function login(options: LoginOptions): Promise<void> {
   let browser: Browser | null = null;
   
   try {
-    browser = await browserType.launch({
+    const launchOptions: any = {
       headless: options.headless,
       args: options.browser === "chromium" 
         ? ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-setuid-sandbox"]
         : [],
-    });
+    };
+
+    // Use custom executable path if provided
+    if (options.browser === "chromium" && options.chromiumPath) {
+      launchOptions.executablePath = options.chromiumPath;
+    } else if (options.browser === "firefox" && options.firefoxPath) {
+      launchOptions.executablePath = options.firefoxPath;
+    }
+
+    browser = await browserType.launch(launchOptions);
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },

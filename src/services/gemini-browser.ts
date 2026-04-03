@@ -89,13 +89,24 @@ export class GeminiTab {
       return;
     }
 
-    await this.page.goto(GEMINI_URL, { waitUntil: "networkidle" });
-
-    // Wait for the page to be ready
-    await this.waitForPageReady();
+    await this.navigateToGemini();
 
     this.initialized = true;
     console.log("✓ Tab initialized");
+  }
+
+  private async navigateToGemini(): Promise<void> {
+    // Check if already on Gemini to use reload instead of goto
+    const currentUrl = this.page.url();
+    if (currentUrl.includes("gemini.google.com")) {
+      // Use reload to force a fresh page load
+      await this.page.reload({ waitUntil: "networkidle" });
+    } else {
+      await this.page.goto(GEMINI_URL, { waitUntil: "networkidle" });
+    }
+
+    // Wait for the page to be ready
+    await this.waitForPageReady();
   }
 
   async sendMessage(messages: { role: string; content: string }[]): Promise<string> {
@@ -179,20 +190,29 @@ export class GeminiTab {
 
     // Clear any existing content and type the prompt
     try {
-      if (usedSelector.includes('contenteditable="true"')) {
-        await inputElement.click();
-        // Clear content for contenteditable
-        await this.page.keyboard.press('Control+A');
-        await this.page.keyboard.press('Backspace');
-        await this.page.keyboard.type(prompt);
-      } else {
-        await inputElement.fill(prompt);
-      }
+      // Click to focus the input
+      await inputElement.click();
+      await this.page.waitForTimeout(100);
+
+      // Clear content - use Ctrl+A to select all then type to replace
+      await this.page.keyboard.press('Control+A');
+      await this.page.waitForTimeout(50);
+      await this.page.keyboard.press('Delete');
+      await this.page.waitForTimeout(50);
+
+      // Type the new prompt
+      await this.page.keyboard.type(prompt);
+      await this.page.waitForTimeout(100);
     } catch (error: any) {
       console.warn(`Failed to fill/type prompt using ${usedSelector}: ${error.message}`);
-      // Fallback to click and type if fill fails
-      await inputElement.click();
-      await this.page.keyboard.type(prompt);
+      // Fallback to fill if available
+      try {
+        await inputElement.fill(prompt);
+      } catch {
+        // Last resort: click and type
+        await inputElement.click();
+        await this.page.keyboard.type(prompt);
+      }
     }
 
     // Submit the message
@@ -234,10 +254,45 @@ export class GeminiTab {
       '[data-testid="response"]',
       ".conversation-response",
       '[data-message-author-role="model"]',
+      ".model-response-text",
+      '[class*="response"]',
     ];
 
     // Wait a bit for the response to start generating
     await this.page.waitForTimeout(1000);
+
+    // First, wait for any response element to appear
+    let responseElement = null;
+    let foundSelector = "";
+    const waitForElementStart = Date.now();
+    const maxElementWaitTime = 30000; // 30 seconds to start seeing a response
+
+    while (Date.now() - waitForElementStart < maxElementWaitTime) {
+      for (const selector of responseSelectors) {
+        try {
+          const element = await this.page.$(selector);
+          if (element) {
+            const text = await element.textContent();
+            // Only consider it found if it has content
+            if (text && text.trim().length > 0) {
+              responseElement = element;
+              foundSelector = selector;
+              break;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+      if (responseElement) break;
+      await this.page.waitForTimeout(500);
+    }
+
+    if (!responseElement) {
+      throw new Error("Timeout waiting for response element to appear");
+    }
+
+    console.log(`Found response element using selector: ${foundSelector}`);
 
     // Poll for response completion
     const maxWaitTime = 120000; // 2 minutes
@@ -247,22 +302,28 @@ export class GeminiTab {
     let lastResponseText = "";
 
     while (Date.now() - startTime < maxWaitTime) {
-      for (const selector of responseSelectors) {
-        try {
-          const responseElement = await this.page.$(selector);
-          if (responseElement) {
-            const text = await responseElement.textContent();
-            if (text && text !== lastResponseText) {
-              lastResponseText = text;
-              // Check if response is complete (no loading indicator)
-              const isComplete = await this.isResponseComplete();
-              if (isComplete) {
-                return text.trim();
-              }
-            }
+      try {
+        const text = await responseElement.textContent();
+        if (text && text !== lastResponseText) {
+          lastResponseText = text;
+          // Check if response is complete (no loading indicator)
+          const isComplete = await this.isResponseComplete();
+          if (isComplete && text.trim().length > 0) {
+            return text.trim();
           }
-        } catch {
-          continue;
+        }
+      } catch {
+        // Element might have been replaced, try to find it again
+        for (const selector of responseSelectors) {
+          try {
+            const element = await this.page.$(selector);
+            if (element) {
+              responseElement = element;
+              break;
+            }
+          } catch {
+            continue;
+          }
         }
       }
 
@@ -282,6 +343,8 @@ export class GeminiTab {
       '[data-testid="response"]',
       ".conversation-response",
       '[data-message-author-role="model"]',
+      ".model-response-text",
+      '[class*="response"]',
     ];
 
     const maxWaitTime = 120000;
@@ -289,20 +352,33 @@ export class GeminiTab {
     const startTime = Date.now();
 
     let lastText = "";
+    let responseElementFound = false;
 
     while (Date.now() - startTime < maxWaitTime) {
       let currentText = "";
+      let responseElement = null;
 
       for (const selector of responseSelectors) {
         try {
-          const responseElement = await this.page.$(selector);
-          if (responseElement) {
-            currentText = (await responseElement.textContent()) || "";
-            break;
+          const element = await this.page.$(selector);
+          if (element) {
+            const text = await element.textContent();
+            if (text && text.trim().length > 0) {
+              responseElement = element;
+              currentText = text;
+              responseElementFound = true;
+              break;
+            }
           }
         } catch {
           continue;
         }
+      }
+
+      // Only start yielding once we found a response element
+      if (!responseElementFound) {
+        await this.page.waitForTimeout(pollInterval);
+        continue;
       }
 
       if (currentText.length > lastText.length) {
@@ -317,6 +393,10 @@ export class GeminiTab {
       }
 
       await this.page.waitForTimeout(pollInterval);
+    }
+
+    if (!responseElementFound) {
+      throw new Error("Timeout waiting for response element in stream");
     }
   }
 
@@ -367,9 +447,8 @@ export class GeminiTab {
   }
 
   async reset(): Promise<void> {
-    // Navigate to a new conversation
-    await this.page.goto(GEMINI_URL, { waitUntil: "networkidle" });
-    await this.waitForPageReady();
+    // Navigate to a new conversation using reload if already on Gemini
+    await this.navigateToGemini();
   }
 
   async close(): Promise<void> {

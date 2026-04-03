@@ -15,11 +15,15 @@ program
   .description("Login to Gemini by opening browser for authentication")
   .option("-h, --headless", "Run browser in headless mode", false)
   .option("-b, --browser <browser>", "Browser to use: chromium or firefox", "chromium")
+  .option("--chromium-path <path>", "Path to custom Chromium executable")
+  .option("--firefox-path <path>", "Path to custom Firefox executable")
   .action(async (options) => {
     try {
       await login({
         headless: options.headless,
-        browser: options.browser as "chromium" | "firefox"
+        browser: options.browser as "chromium" | "firefox",
+        chromiumPath: options.chromiumPath,
+        firefoxPath: options.firefoxPath
       });
     } catch (error) {
       console.error("Login failed:", error);
@@ -35,6 +39,8 @@ program
   .option("--headless", "Run browser in headless mode", true)
   .option("--pool-size <size>", "Number of browser tabs to maintain in pool", "3")
   .option("-b, --browser <browser>", "Browser to use: chromium or firefox", "chromium")
+  .option("--chromium-path <path>", "Path to custom Chromium executable")
+  .option("--firefox-path <path>", "Path to custom Firefox executable")
   .action(async (options) => {
     try {
       await serve(options);

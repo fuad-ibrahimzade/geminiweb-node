@@ -209,17 +209,29 @@ export async function serve(options: ServeOptions): Promise<void> {
     const page = await tabManager.acquirePage();
 
     try {
-      // Navigate to Gemini with retry logic
+      // Check if already on Gemini to use reload instead of goto
+      const currentUrl = page.url();
+      console.log(`[Debug] Current URL: ${currentUrl}`);
+
       let navigated = false;
       let navigationError = null;
-      const waitStrategies: ("domcontentloaded" | "load")[] = ["domcontentloaded", "load", "domcontentloaded"];
+      const waitStrategies: ("domcontentloaded" | "load" | "networkidle")[] = ["domcontentloaded", "load", "networkidle"];
       
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const waitStrategy = waitStrategies[attempt - 1];
-          // Use domcontentloaded or load instead of networkidle for better reliability on Google sites
-          await page.goto(GEMINI_URL, { waitUntil: waitStrategy, timeout: 30000 });
+          
+          if (currentUrl.includes("gemini.google.com")) {
+            // Use reload to force a fresh page load when already on Gemini
+            console.log(`[Debug] Reloading page (attempt ${attempt}, waitUntil: ${waitStrategy})`);
+            await page.reload({ waitUntil: waitStrategy, timeout: 30000 });
+          } else {
+            // Navigate to Gemini
+            console.log(`[Debug] Navigating to Gemini (attempt ${attempt}, waitUntil: ${waitStrategy})`);
+            await page.goto(GEMINI_URL, { waitUntil: waitStrategy, timeout: 30000 });
+          }
           navigated = true;
+          console.log(`[Debug] Navigation successful. Current URL: ${page.url()}`);
           break;
         } catch (err: any) {
           navigationError = err;
@@ -232,16 +244,41 @@ export async function serve(options: ServeOptions): Promise<void> {
         throw new Error(`Network error: Failed to reach Gemini after multiple attempts. ${navigationError?.message}`);
       }
 
-      // Check for login prompt or session expiry
+      // Check for login prompt or session expiry - more specific check
+      const currentUrlAfterNav = page.url();
+      console.log(`[Debug] URL after navigation: ${currentUrlAfterNav}`);
+
+      // Primary check: if we've been redirected to accounts.google.com, we're definitely on a login page
+      if (currentUrlAfterNav.includes("accounts.google.com")) {
+        console.error("[Error] Redirected to accounts.google.com - user not logged in");
+        throw new Error("Authentication error: Not logged in or session expired. Please run 'npm run login' again.");
+      }
+
+      // Secondary check: look for specific login page elements, not just "Sign in" text
       const isLoginPrompt = await page.evaluate(() => {
-        const text = document.body.innerText;
-        return (text.includes("Sign in") && (text.includes("to continue to Gemini") || text.includes("Use your Google Account"))) ||
-               (document.querySelector('a[href*="accounts.google.com/ServiceLogin"]') !== null);
+        // Check for login page specific indicators
+        const loginElements = [
+          document.querySelector('input[type="email"]'),
+          document.querySelector('input[type="password"]'),
+          document.querySelector('[data-initial-focus="true"]'),
+        ];
+        
+        const hasLoginElements = loginElements.some(el => el !== null);
+        
+        // Check for specific login page text combinations
+        const bodyText = document.body.innerText;
+        const hasLoginText = bodyText.includes("to continue to Gemini") || 
+                           bodyText.includes("Use your Google Account");
+        
+        return hasLoginElements || hasLoginText;
       });
 
       if (isLoginPrompt) {
+        console.error("[Error] Login page detected");
         throw new Error("Authentication error: Not logged in or session expired. Please run 'npm run login' again.");
       }
+
+      console.log("[Debug] Authentication check passed");
 
       // Check for "browser not secure" warning
       const isNotSecure = await page.evaluate(() => {
@@ -343,21 +380,105 @@ export async function serve(options: ServeOptions): Promise<void> {
         await page.keyboard.press("Enter");
       }
 
-      // Wait for response
-      await page.waitForTimeout(3000);
+      // Wait for response with better detection logic
+      console.log("[Debug] Waiting for response...");
       
-      const responseSelectors = [".response-content", '[data-testid="response"]', ".conversation-response"];
+      const responseSelectors = [".response-content", '[data-testid="response"]', ".conversation-response", '[data-message-author-role="model"]'];
+      const loadingSelectors = [".loading-indicator", '[data-testid="loading"]', ".generating", ".thinking", "mat-progress-bar", "[aria-label='Thinking']"];
+      
       let response = "";
-      
-      for (const selector of responseSelectors) {
-        try {
-          const el = await page.$(selector);
-          if (el) {
-            response = (await el.textContent()) || "";
-            if (response) break;
+      let responseElement = null;
+      let foundSelector = "";
+      const maxWaitTime = 60000; // 60 seconds
+      const checkInterval = 500;
+      const startTime = Date.now();
+      let lastResponseLength = 0;
+      let stableCount = 0;
+      const requiredStableCount = 3; // Need 3 consecutive checks with same length
+
+      // First, find the response element
+      console.log("[Debug] Looking for response element...");
+      while (Date.now() - startTime < maxWaitTime) {
+        // Check if response is complete (no loading indicators)
+        const isLoading = await page.evaluate((selectors) => {
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el && (el as HTMLElement).offsetParent !== null) { // Element exists and is visible
+              return true;
+            }
           }
-        } catch { continue; }
+          // Also check for loading text
+          const bodyText = document.body.innerText;
+          return bodyText.includes("Thinking...") || 
+                 bodyText.includes("Gemini is thinking") ||
+                 bodyText.includes("Generating response");
+        }, loadingSelectors);
+
+        if (!isLoading) {
+          // Try to find response element
+          for (const selector of responseSelectors) {
+            try {
+              const elements = await page.$$(selector);
+              if (elements.length > 0) {
+                // Get the last one (most recent response)
+                const lastElement = elements[elements.length - 1];
+                const text = await lastElement.textContent();
+                if (text && text.trim().length > 0) {
+                  responseElement = lastElement;
+                  foundSelector = selector;
+                  response = text.trim();
+                  console.log(`[Debug] Response element found: ${selector}, length: ${response.length}`);
+                  break;
+                }
+              }
+            } catch { continue; }
+          }
+
+          if (responseElement) {
+            // Check if response is stable
+            if (response.length === lastResponseLength) {
+              stableCount++;
+              if (stableCount >= requiredStableCount) {
+                console.log(`[Debug] Response stable for ${stableCount} checks. Final length: ${response.length}`);
+                break;
+              }
+            } else {
+              lastResponseLength = response.length;
+              stableCount = 0;
+              console.log(`[Debug] Response still generating... Current length: ${response.length}`);
+            }
+          }
+        } else {
+          console.log("[Debug] Still loading/thinking...");
+        }
+        
+        await page.waitForTimeout(checkInterval);
       }
+
+      // Final attempt to get response
+      if (!response || response.length === 0) {
+        console.log("[Debug] No response found during polling, making final attempt...");
+        for (const selector of responseSelectors) {
+          try {
+            const elements = await page.$$(selector);
+            if (elements.length > 0) {
+              const lastElement = elements[elements.length - 1];
+              const text = await lastElement.textContent();
+              if (text && text.trim().length > 0) {
+                response = text.trim();
+                console.log(`[Debug] Final attempt found response: length ${response.length}`);
+                break;
+              }
+            }
+          } catch { continue; }
+        }
+      }
+
+      if (!response) {
+        throw new Error("Failed to get response from Gemini. The response may not have loaded properly.");
+      }
+      
+      console.log(`[Debug] Final response length: ${response.length}`);
 
       if (stream) {
         res.setHeader("Content-Type", "text/event-stream");

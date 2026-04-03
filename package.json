@@ -1,0 +1,34 @@
+{
+  "name": "gemini-playwright-server",
+  "version": "1.0.0",
+  "description": "Node.js project with Playwright-based Gemini browser automation and OpenAI-compatible API server",
+  "main": "dist/index.js",
+  "bin": {
+    "gemini-server": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "login": "tsx src/index.ts login",
+    "serve": "tsx src/index.ts serve",
+    "logout": "tsx src/index.ts logout"
+  },
+  "keywords": ["gemini", "openai", "playwright", "browser-automation", "api-server"],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.1",
+    "commander": "^14.0.3",
+    "dotenv": "^17.4.0",
+    "express": "^5.2.1",
+    "playwright": "^1.59.1"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}

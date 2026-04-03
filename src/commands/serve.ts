@@ -40,12 +40,22 @@ class TabManager {
     
     console.log(`Initializing ${this.browserType} browser with ${poolSize} tabs...`);
     
-    this.browser = await browserType.launch({
+    const launchOptions: any = {
       headless,
       args: this.browserType === "chromium" 
         ? ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-setuid-sandbox"]
-        : [],
-    });
+        : ["--width=1280", "--height=800"],
+    };
+
+    if (this.browserType === "firefox") {
+      launchOptions.firefoxUserPrefs = {
+        "remote.active-port": 0,
+        "dom.webdriver.enabled": false,
+        "useAutomationExtension": false,
+      };
+    }
+
+    this.browser = await browserType.launch(launchOptions);
 
     // Load cookies if they exist
     let cookies: any[] = [];
@@ -58,11 +68,18 @@ class TabManager {
       }
     }
 
+    const userAgent = this.browserType === "firefox"
+      ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0"
+      : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+
     // Create contexts and pages
     for (let i = 0; i < poolSize; i++) {
       const context = await this.browser.newContext({
         viewport: { width: 1280, height: 800 },
-        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        userAgent,
+        extraHTTPHeaders: {
+          'Accept-Language': 'en-US,en;q=0.9',
+        }
       });
       
       if (cookies.length > 0) {
@@ -168,8 +185,48 @@ export async function serve(options: ServeOptions): Promise<void> {
     const page = await tabManager.acquirePage();
 
     try {
-      // Navigate to Gemini
-      await page.goto(GEMINI_URL, { waitUntil: "networkidle" });
+      // Navigate to Gemini with retry logic
+      let navigated = false;
+      let navigationError = null;
+      const waitStrategies: ("domcontentloaded" | "load")[] = ["domcontentloaded", "load", "domcontentloaded"];
+      
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const waitStrategy = waitStrategies[attempt - 1];
+          // Use domcontentloaded or load instead of networkidle for better reliability on Google sites
+          await page.goto(GEMINI_URL, { waitUntil: waitStrategy, timeout: 30000 });
+          navigated = true;
+          break;
+        } catch (err: any) {
+          navigationError = err;
+          console.warn(`Navigation attempt ${attempt} failed with ${waitStrategies[attempt-1]}: ${err.message}`);
+          if (attempt < 3) await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+        }
+      }
+
+      if (!navigated) {
+        throw new Error(`Network error: Failed to reach Gemini after multiple attempts. ${navigationError?.message}`);
+      }
+
+      // Check for login prompt or session expiry
+      const isLoginPrompt = await page.evaluate(() => {
+        const text = document.body.innerText;
+        return (text.includes("Sign in") && (text.includes("to continue to Gemini") || text.includes("Use your Google Account"))) ||
+               (document.querySelector('a[href*="accounts.google.com/ServiceLogin"]') !== null);
+      });
+
+      if (isLoginPrompt) {
+        throw new Error("Authentication error: Not logged in or session expired. Please run 'npm run login' again.");
+      }
+
+      // Check for "browser not secure" warning
+      const isNotSecure = await page.evaluate(() => {
+        return document.body.innerText.includes("This browser or app may not be secure");
+      });
+
+      if (isNotSecure) {
+        throw new Error("Browser security error: Google blocked this browser as 'not secure'. Try switching browser type or running login again.");
+      }
 
       // Format prompt
       const prompt = requestBody.messages.map(m => {
@@ -178,7 +235,7 @@ export async function serve(options: ServeOptions): Promise<void> {
         return `Assistant: ${m.content}`;
       }).join("\n\n");
 
-      // Find and fill input
+      // Find and fill input with custom wait strategy
       const inputSelectors = [
         '[data-testid="chat-input"]',
         '[placeholder*="Ask anything"]',
@@ -187,15 +244,27 @@ export async function serve(options: ServeOptions): Promise<void> {
       ];
 
       let inputElement = null;
-      for (const selector of inputSelectors) {
-        try {
-          inputElement = await page.$(selector);
-          if (inputElement) break;
-        } catch { continue; }
+      let inputReady = false;
+      for (let i = 0; i < 15; i++) { // 15 second timeout
+        for (const selector of inputSelectors) {
+          try {
+            inputElement = await page.$(selector);
+            if (inputElement && await inputElement.isVisible()) {
+              inputReady = true;
+              break;
+            }
+          } catch { continue; }
+        }
+        if (inputReady) break;
+        await page.waitForTimeout(1000);
       }
 
       if (!inputElement) {
-        throw new Error("Could not find chat input field");
+        // One last check for login page if we couldn't find the input
+        if (page.url().includes("accounts.google.com")) {
+          throw new Error("Authentication error: Directed to login page. Please run 'npm run login'.");
+        }
+        throw new Error("Timeout error: Could not find chat input field. Gemini might be slow or the UI has changed.");
       }
 
       await inputElement.fill(prompt);

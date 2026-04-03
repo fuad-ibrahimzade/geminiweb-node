@@ -9,6 +9,7 @@ A Node.js project with Playwright-based Gemini browser automation and OpenAI-com
 - **Tab pool management**: Efficient handling of concurrent requests using a pool of browser tabs
 - **Session persistence**: Saves and reuses login sessions between server restarts
 - **Streaming support**: Supports both streaming and non-streaming chat completions
+- **Multi-browser support**: Works with Chromium or Firefox
 
 ## Prerequisites
 
@@ -20,13 +21,13 @@ A Node.js project with Playwright-based Gemini browser automation and OpenAI-com
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd gemini-playwright-server
+cd bp6rdf22
 
 # Install dependencies
 npm install
 
-# Install Playwright browsers
-npx playwright install chromium
+# Install Playwright browsers (see OS-specific instructions below)
+npx playwright install chromium firefox
 
 # Build the project
 npm run build
@@ -39,11 +40,11 @@ npm run build
 First, you need to authenticate with Gemini:
 
 ```bash
-# Interactive login (opens browser)
+# Interactive login with Chromium (default)
 npm run login
 
-# Or with CLI
-node dist/index.js login
+# Use Firefox instead (recommended on NixOS)
+npm run login -- --browser firefox
 ```
 
 This will open a browser window where you can log in to your Google account. The session will be saved for later use.
@@ -51,11 +52,14 @@ This will open a browser window where you can log in to your Google account. The
 ### 2. Start the API Server
 
 ```bash
-# Start the server
+# Start the server with Chromium
 npm run serve
 
+# Use Firefox instead (recommended on NixOS)
+npm run serve -- --browser firefox
+
 # Or with custom options
-node dist/index.js serve --port 8080 --pool-size 5
+npm run serve -- --port 8080 --pool-size 5 --browser firefox
 ```
 
 ### 3. Logout (Optional)
@@ -114,64 +118,65 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 
 ```bash
 # Login
-node dist/index.js login [--headless]
+npm run login
+npm run login -- --browser firefox    # Use Firefox (recommended on NixOS)
 
 # Start server
-node dist/index.js serve [options]
-  Options:
-    -p, --port <port>       Port to run the server on (default: 3000)
-    -h, --host <host>       Host to bind the server to (default: localhost)
-    --headless              Run browser in headless mode (default: true)
-    --pool-size <size>      Number of browser tabs to maintain in pool (default: 3)
+npm run serve
+npm run serve -- --browser firefox --port 8080 --pool-size 5
 
 # Logout
-node dist/index.js logout
+npm run logout
 ```
 
-## Environment Variables
+Options:
+- `-p, --port <port>` - Port to run the server on (default: 3000)
+- `-h, --host <host>` - Host to bind the server to (default: localhost)
+- `--headless` - Run browser in headless mode (default: true)
+- `--pool-size <size>` - Number of browser tabs to maintain in pool (default: 3)
+- `-b, --browser <browser>` - Browser to use: chromium or firefox (default: chromium)
 
-Create a `.env` file in the project root:
+## Cross-Platform Compatibility
 
-```env
-# Optional: Set custom session directory
-GEMINI_SESSION_DIR=/path/to/sessions
+### Installation
 
-# Optional: Debug mode
-DEBUG=true
-```
-
-## Development
-
+#### Ubuntu/Debian
 ```bash
-# Run in development mode
-npm run dev
-
-# Build
-npm run build
-
-# Start built version
-npm start
+npx playwright install chromium --with-deps
+npx playwright install firefox
 ```
 
-## Project Structure
+#### NixOS
+On NixOS, Chromium may fail with "libnspr4.so" errors. Use Firefox instead:
+```bash
+npx playwright install firefox
+```
 
+Or use the provided script:
+```bash
+./install-playwright.sh
 ```
-├── src/
-│   ├── commands/        # CLI commands
-│   │   ├── login.ts     # Login command
-│   │   ├── logout.ts    # Logout command
-│   │   └── serve.ts     # Serve command
-│   ├── services/        # Core services
-│   │   ├── gemini-browser.ts  # Browser automation
-│   │   └── tab-pool.ts        # Tab pool management
-│   ├── types/           # TypeScript types
-│   │   └── index.ts
-│   └── index.ts         # CLI entry point
-├── dist/                # Compiled output
-├── package.json
-├── tsconfig.json
-└── README.md
+
+#### macOS
+```bash
+npx playwright install chromium firefox
 ```
+
+#### Windows (WSL or Git Bash)
+```bash
+npx playwright install chromium firefox
+```
+
+### Troubleshooting
+
+**NixOS - Missing library errors (libnspr4.so)**:
+If you get errors like `libnspr4.so: cannot open shared object file`, use Firefox instead:
+```bash
+npm run login -- --browser firefox
+npm run serve -- --browser firefox
+```
+
+Firefox works on NixOS without requiring additional system libraries.
 
 ## How It Works
 
@@ -186,13 +191,6 @@ npm start
    - The message is sent to Gemini via Playwright
    - The response is captured and formatted as OpenAI-compatible JSON
    - The tab is released back to the pool
-
-## Limitations
-
-- Requires manual login initially
-- Subject to Gemini's rate limits
-- Web interface may change, potentially breaking selectors
-- Not suitable for high-throughput production use
 
 ## License
 

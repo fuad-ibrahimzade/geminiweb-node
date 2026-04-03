@@ -14,9 +14,13 @@ program
   .command("login")
   .description("Login to Gemini by opening browser for authentication")
   .option("-h, --headless", "Run browser in headless mode", false)
+  .option("-b, --browser <browser>", "Browser to use: chromium or firefox", "chromium")
   .action(async (options) => {
     try {
-      await login(options);
+      await login({
+        headless: options.headless,
+        browser: options.browser as "chromium" | "firefox"
+      });
     } catch (error) {
       console.error("Login failed:", error);
       process.exit(1);
@@ -30,6 +34,7 @@ program
   .option("-h, --host <host>", "Host to bind the server to", "localhost")
   .option("--headless", "Run browser in headless mode", true)
   .option("--pool-size <size>", "Number of browser tabs to maintain in pool", "3")
+  .option("-b, --browser <browser>", "Browser to use: chromium or firefox", "chromium")
   .action(async (options) => {
     try {
       await serve(options);

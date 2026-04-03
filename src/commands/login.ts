@@ -1,4 +1,4 @@
-import { chromium, Browser, Page } from "playwright";
+import { chromium, firefox, Browser, Page, BrowserType } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -9,23 +9,60 @@ const COOKIES_FILE = path.join(SESSION_DIR, "cookies.json");
 
 interface LoginOptions {
   headless: boolean;
+  browser: "chromium" | "firefox";
+}
+
+// Detect if we're on NixOS
+function isNixOS(): boolean {
+  return fs.existsSync("/etc/nixos/nixexprs") || fs.existsSync("/etc/NIXOS");
+}
+
+// Get recommended browser for the current OS
+function getRecommendedBrowser(): "chromium" | "firefox" {
+  if (isNixOS()) {
+    console.log("Detected NixOS: Using Firefox (works without system library dependencies)");
+    return "firefox";
+  }
+  return "chromium";
+}
+
+// Install Firefox on NixOS if needed
+async function ensureFirefoxInstalled(): Promise<void> {
+  if (isNixOS()) {
+    console.log("Note: On NixOS, you may need to install Firefox with:");
+    console.log("  nix-env -iA nixpkgs.firefox");
+    console.log("Or add to your shell.nix/home-manager config.\n");
+  }
 }
 
 export async function login(options: LoginOptions): Promise<void> {
+  // Determine which browser to use
+  const browserType: BrowserType = options.browser === "firefox" ? firefox : chromium;
+  
   console.log("Starting Gemini login process...");
-  console.log("Opening browser for authentication...");
+  console.log(`Using browser: ${options.browser === "firefox" ? "Firefox" : "Chromium"}`);
+  
+  if (options.browser === "chromium" && isNixOS()) {
+    console.log("\n⚠️  Warning: Chromium on NixOS requires system libraries.");
+    console.log("If this fails, try: npm run login -- --browser firefox");
+    console.log("Or install Firefox: nix-env -iA nixpkgs.firefox\n");
+  }
 
   // Ensure session directory exists
   if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
   }
 
-  const browser = await chromium.launch({
-    headless: options.headless,
-    args: ["--disable-blink-features=AutomationControlled"],
-  });
-
+  let browser: Browser | null = null;
+  
   try {
+    browser = await browserType.launch({
+      headless: options.headless,
+      args: options.browser === "chromium" 
+        ? ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-setuid-sandbox"]
+        : [],
+    });
+
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
       userAgent:
@@ -59,20 +96,30 @@ export async function login(options: LoginOptions): Promise<void> {
     fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
     console.log(`✓ Session saved to ${COOKIES_FILE}`);
 
-    console.log("\n✓ Login complete! You can now use 'gemini-server serve' to start the API server.");
-  } catch (error) {
-    console.error("Error during login:", error);
+    console.log("\n✓ Login complete! You can now use 'npm run serve' to start the API server.");
+  } catch (error: any) {
+    // Provide helpful error messages
+    if (error.message?.includes("libnspr4.so") || error.message?.includes("shared libraries")) {
+      console.error("\n❌ Missing system libraries for Chromium.");
+      console.error("\nSolutions:");
+      console.error("1. Use Firefox instead: npm run login -- --browser firefox");
+      console.error("2. Install Chromium dependencies on NixOS:");
+      console.error("   nix-env -iA nixpkgs.chromedriver");
+      console.error("   Or use steam-run: sr npm run login");
+      console.error("3. Install Firefox: nix-env -iA nixpkgs.firefox");
+    }
     throw error;
   } finally {
-    await browser.close();
-    console.log("Browser closed.");
+    if (browser) {
+      await browser.close();
+      console.log("Browser closed.");
+    }
   }
 }
 
 async function checkIfLoggedIn(page: Page): Promise<boolean> {
   try {
     // Check for elements that indicate logged-in state
-    // Look for the chat input or user profile elements
     const loggedInIndicators = [
       '[data-testid="chat-input"]',
       '[placeholder*="Ask anything"]',
